@@ -1,0 +1,6 @@
+# Development tooling for sg-embedded.
+# Runtime dependencies are added in Phase 1 with the first SGAQ kernel module.
+pytest>=8.0
+ruff>=0.6
+mypy>=1.11
+pydantic>=2.0

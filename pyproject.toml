@@ -1,0 +1,26 @@
+# sg-embedded — tooling configuration.
+#
+# NOTE: no [build-system]/[project] table yet. Per README §12, directories and
+# packages are introduced when their first governed artifact is ready. The
+# packaging metadata is added in Phase 1, alongside the first SGAQ kernel module.
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "hardware: requires physical Smart Guitar / Digi-Tec hardware attached",
+    "evidence: consumes or produces EVT/DVT evidence artifacts",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_unreachable = true
