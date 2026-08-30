@@ -1,8 +1,26 @@
-# sg-embedded — tooling configuration.
+# sg-embedded — packaging and tooling configuration.
 #
-# NOTE: no [build-system]/[project] table yet. Per README §12, directories and
-# packages are introduced when their first governed artifact is ready. The
-# packaging metadata is added in Phase 1, alongside the first SGAQ kernel module.
+# Packaging metadata arrives here in Tranche 1 alongside the first SGAQ kernel
+# modules, as the Tranche 0 note promised. It is deliberately minimal: enough
+# to install and test the package, and no release machinery.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sg-embedded"
+version = "0.0.0"
+description = "Smart Guitar Embedded Systems Authority"
+readme = "README.md"
+requires-python = ">=3.11"
+# The SGAQ engineering kernel is standard library only. Serialization or
+# contract frameworks belong at the sg-spec boundary, not in the qualification
+# mathematics, which must stay portable and deterministic.
+dependencies = []
+
+[tool.setuptools]
+packages = ["acquisition"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -15,12 +33,12 @@ markers = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_unreachable = true
