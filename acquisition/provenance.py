@@ -22,6 +22,7 @@ answered here.
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -31,7 +32,9 @@ __all__ = [
     "NON_AUTHORITATIVE_PROVENANCE",
     "Provenance",
     "Quantity",
+    "blocker_for",
     "canonical_json",
+    "collect_blockers",
     "is_traceable",
     "provenance_of",
     "require_unit",
@@ -277,3 +280,42 @@ def canonical_json(payload: Any) -> str:
         allow_nan=False,
         ensure_ascii=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# STAGED FOR 001B -- evidence blocker reporting (utility U-05).
+#
+# Not part of the 001A gate. These turn traceability into decision-support
+# text, which is a qualification-layer concern rather than a property of a
+# quantity.
+# ---------------------------------------------------------------------------
+
+
+def blocker_for(name: str, quantity: Quantity | None) -> str | None:
+    """Return a human-readable evidence blocker for ``name``, or ``None``.
+
+    The strings are stable enough to assert against and are the raw material a
+    later report renders.
+    """
+    if quantity is None:
+        return f"{name} is missing (no value declared)"
+    if not quantity.provenance.is_authoritative:
+        return f"{name} is {quantity.provenance.value.upper()}"
+    if quantity.provenance is Provenance.MEASURED and quantity.evidence_ref is None:
+        return f"{name} is MEASURED but has no evidence reference"
+    if not quantity.source.strip():
+        return (
+            f"{name} is {quantity.provenance.value.upper()} "
+            "but has no evidence source"
+        )
+    return None
+
+
+def collect_blockers(fields: Mapping[str, Quantity | None]) -> tuple[str, ...]:
+    """Evidence blockers for a mapping of field path to quantity.
+
+    Order follows the mapping's own iteration order, which the model layer
+    fixes explicitly, so the result is deterministic.
+    """
+    blockers = (blocker_for(name, q) for name, q in fields.items())
+    return tuple(b for b in blockers if b is not None)

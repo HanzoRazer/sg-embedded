@@ -13,7 +13,9 @@ input raises; nothing is silently clamped, defaulted, or discarded.
 """
 
 import math
-from typing import Final
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Final
 
 __all__ = [
     "combine_snr_db",
@@ -238,3 +240,163 @@ def voltage_snr_db(signal_vrms: float, noise_vrms: float) -> float:
     _positive(signal_vrms, "signal_vrms")
     _positive(noise_vrms, "noise_vrms")
     return 20.0 * math.log10(signal_vrms / noise_vrms)
+
+
+# ---------------------------------------------------------------------------
+# STAGED FOR 001B -- broadband noise budget and dominant-limiter analysis.
+#
+# Not part of the 001A gate. This assembles the primitives above into a design
+# result, which is a qualification-layer act rather than a mathematical one.
+# Nothing in the 001A surface depends on any of it.
+# ---------------------------------------------------------------------------
+
+FRONT_END: Final = "front_end"
+CONVERTER_THERMAL: Final = "converter_thermal"
+QUANTIZATION: Final = "quantization"
+JITTER: Final = "jitter"
+
+CONTRIBUTORS: Final[tuple[str, ...]] = (
+    FRONT_END,
+    CONVERTER_THERMAL,
+    QUANTIZATION,
+    JITTER,
+)
+"""The broadband noise contributors, in a fixed order.
+
+Fixed so limiter selection stays deterministic when two contributors are
+exactly equal.
+"""
+
+
+@dataclass(frozen=True)
+class NoiseBudget:
+    """The result of a broadband noise budget.
+
+    Attributes
+    ----------
+    contributions:
+        Per-contributor SNR in dB, referenced to converter full scale, in the
+        fixed :data:`CONTRIBUTORS` order.
+    combined_snr_db:
+        All contributions combined by noise-power addition.
+    limiter:
+        The contributor carrying the largest share of total noise power, i.e.
+        the term that actually limits the path. Ties break by
+        :data:`CONTRIBUTORS` order.
+    limiter_share:
+        The limiter's fraction of total noise power, in ``(0, 1]``. A share
+        near 0.25 means all four terms are comparable and no single fix helps.
+    jitter_headroom_db:
+        How far the jitter-limited SNR sits above the combined SNR of every
+        other contributor. Positive means the clock is quieter than the rest of
+        the path put together, so clock improvements cannot help much. This is
+        a diagnostic against the design as it stands, distinct from
+        :func:`jitter_budget_s`, which allocates against an external target.
+    total_jitter_s:
+        Clock RMS jitter and converter aperture jitter combined in quadrature.
+    signal_reference:
+        The declared reference for every SNR reported here.
+    """
+
+    contributions: Mapping[str, float]
+    combined_snr_db: float
+    limiter: str
+    limiter_share: float
+    jitter_headroom_db: float
+    total_jitter_s: float
+    signal_reference: str = "converter_full_scale"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "contributions": {
+                name: self.contributions[name]
+                for name in CONTRIBUTORS
+                if name in self.contributions
+            },
+            "combined_snr_db": self.combined_snr_db,
+            "limiter": self.limiter,
+            "limiter_share": self.limiter_share,
+            "jitter_headroom_db": self.jitter_headroom_db,
+            "total_jitter_s": self.total_jitter_s,
+            "signal_reference": self.signal_reference,
+        }
+
+
+def _noise_power(snr_db: float) -> float:
+    return float(10.0 ** (-snr_db / 10.0))
+
+
+def dominant_limiter(contributions: Mapping[str, float]) -> tuple[str, float]:
+    """Return the limiting contributor and its share of total noise power.
+
+    The limiter is the contributor with the *lowest* SNR, which is the one
+    contributing the *most* noise power. Reporting the share as well as the
+    name matters: naming a limiter that carries 26% of the noise invites an
+    engineering effort that cannot pay off.
+    """
+    if not contributions:
+        raise ValueError("dominant_limiter requires at least one contribution")
+    ordered = [name for name in CONTRIBUTORS if name in contributions]
+    ordered += [name for name in contributions if name not in CONTRIBUTORS]
+    powers = {name: _noise_power(contributions[name]) for name in ordered}
+    total = sum(powers.values())
+    if total <= 0.0:
+        raise ValueError("total noise power underflowed to zero")
+    limiter = max(ordered, key=lambda name: powers[name])
+    return limiter, powers[limiter] / total
+
+
+def broadband_noise_budget(
+    *,
+    test_frequency_hz: float,
+    front_end_noise_density_v_per_rthz: float,
+    noise_bandwidth_hz: float,
+    gain_db: float,
+    full_scale_vrms: float,
+    converter_thermal_snr_db: float,
+    bits: int,
+    clock_rms_jitter_s: float,
+    aperture_jitter_s: float,
+) -> NoiseBudget:
+    """Combine the four broadband contributors into one budget.
+
+    The contributors are the front end, the converter's own thermal noise, the
+    ideal quantization floor, and clock jitter. All four are referenced to
+    converter full scale and combined by noise-power addition.
+
+    Clock jitter and converter aperture jitter are independent timing errors,
+    so they combine in quadrature into a single effective timing uncertainty
+    before being converted to an SNR.
+
+    Every argument is a plain float and required. Missing values are the
+    qualification layer's problem: a budget computed from a default would be a
+    fabricated number wearing the appearance of a result.
+    """
+    total_jitter = rss(
+        _positive(clock_rms_jitter_s, "clock_rms_jitter_s"),
+        _positive(aperture_jitter_s, "aperture_jitter_s"),
+    )
+    front_end_noise = front_end_noise_vrms(
+        front_end_noise_density_v_per_rthz, noise_bandwidth_hz, gain_db
+    )
+    contributions: dict[str, float] = {
+        FRONT_END: voltage_snr_db(full_scale_vrms, front_end_noise),
+        CONVERTER_THERMAL: _finite(
+            converter_thermal_snr_db, "converter_thermal_snr_db"
+        ),
+        QUANTIZATION: quantization_snr_db(bits),
+        JITTER: jitter_snr_db(test_frequency_hz, total_jitter),
+    }
+    combined = combine_snr_db(*(contributions[name] for name in CONTRIBUTORS))
+    limiter, share = dominant_limiter(contributions)
+    others = combine_snr_db(
+        *(contributions[name] for name in CONTRIBUTORS if name != JITTER)
+    )
+    return NoiseBudget(
+        contributions=contributions,
+        combined_snr_db=combined,
+        limiter=limiter,
+        limiter_share=share,
+        jitter_headroom_db=contributions[JITTER] - others,
+        total_jitter_s=total_jitter,
+    )
